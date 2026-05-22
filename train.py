@@ -10,7 +10,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.nn import DataParallel as DP
 
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
+import wandb
 
 import torchvision.utils as vutils
 
@@ -64,11 +64,9 @@ args = parser.parse_args()
 
 torch.manual_seed(args.seed)
 
-arg_str_list = ['{}={}'.format(k, v) for k, v in vars(args).items()]
-arg_str = '__'.join(arg_str_list)
 log_dir = os.path.join(args.log_path, datetime.today().isoformat())
-writer = SummaryWriter(log_dir)
-writer.add_text('hparams', arg_str)
+os.makedirs(log_dir, exist_ok=True)
+wandb.init(entity='jzeitler', project='sysbinder', config=vars(args))
 
 
 def visualize(image, recon_dvae, recon_tf, attns, N=8):
@@ -191,19 +189,20 @@ for epoch in range(start_epoch, args.epochs):
                 print('Train Epoch: {:3} [{:5}/{:5}] \t Loss: {:F} \t MSE: {:F}'.format(
                       epoch+1, batch, train_epoch_size, loss.item(), mse.item()))
                 
-                writer.add_scalar('TRAIN/loss', loss.item(), global_step)
-                writer.add_scalar('TRAIN/cross_entropy', cross_entropy.item(), global_step)
-                writer.add_scalar('TRAIN/mse', mse.item(), global_step)
-
-                writer.add_scalar('TRAIN/tau', tau, global_step)
-                writer.add_scalar('TRAIN/lr_dvae', optimizer.param_groups[0]['lr'], global_step)
-                writer.add_scalar('TRAIN/lr_enc', optimizer.param_groups[1]['lr'], global_step)
-                writer.add_scalar('TRAIN/lr_dec', optimizer.param_groups[2]['lr'], global_step)
+                wandb.log({
+                    'train/loss': loss.item(),
+                    'train/cross_entropy': cross_entropy.item(),
+                    'train/mse': mse.item(),
+                    'train/tau': tau,
+                    'train/lr_dvae': optimizer.param_groups[0]['lr'],
+                    'train/lr_enc': optimizer.param_groups[1]['lr'],
+                    'train/lr_dec': optimizer.param_groups[2]['lr'],
+                }, step=global_step)
 
     with torch.no_grad():
         recon_tf = (model.module if args.use_dp else model).reconstruct_autoregressive(image[:8])
         grid = visualize(image, recon_dvae, recon_tf, attns, N=8)
-        writer.add_image('TRAIN_recons/epoch={:03}'.format(epoch+1), grid)
+        wandb.log({'train_recons': wandb.Image(grid)}, step=(epoch + 1) * train_epoch_size)
     
     with torch.no_grad():
         model.eval()
@@ -228,9 +227,11 @@ for epoch in range(start_epoch, args.epochs):
 
         val_loss = val_mse + val_cross_entropy
 
-        writer.add_scalar('VAL/loss', val_loss, epoch+1)
-        writer.add_scalar('VAL/cross_entropy', val_cross_entropy, epoch + 1)
-        writer.add_scalar('VAL/mse', val_mse, epoch+1)
+        wandb.log({
+            'val/loss': val_loss,
+            'val/cross_entropy': val_cross_entropy,
+            'val/mse': val_mse,
+        }, step=epoch + 1)
 
         print('====> Epoch: {:3} \t Loss = {:F}'.format(epoch+1, val_loss))
 
@@ -243,9 +244,9 @@ for epoch in range(start_epoch, args.epochs):
             if 50 <= epoch:
                 recon_tf = (model.module if args.use_dp else model).reconstruct_autoregressive(image[:8])
                 grid = visualize(image, recon_dvae, recon_tf, attns, N=8)
-                writer.add_image('VAL_recons/epoch={:03}'.format(epoch + 1), grid)
+                wandb.log({'val_recons': wandb.Image(grid)}, step=epoch + 1)
 
-        writer.add_scalar('VAL/best_loss', best_val_loss, epoch+1)
+        wandb.log({'val/best_loss': best_val_loss}, step=epoch + 1)
 
         checkpoint = {
             'epoch': epoch + 1,
@@ -259,4 +260,4 @@ for epoch in range(start_epoch, args.epochs):
 
         print('====> Best Loss = {:F} @ Epoch {}'.format(best_val_loss, best_epoch))
 
-writer.close()
+wandb.finish()
