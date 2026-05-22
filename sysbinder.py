@@ -36,6 +36,8 @@ class BlockPrototypeMemory(nn.Module):
         '''
         queries: B, N, d_model
         return: B, N, d_model
+        
+        Basically performs Modern Hopfield Network retrieval (Ramsauer et al. 2020)
         '''
 
         B, N, _ = queries.shape
@@ -94,7 +96,13 @@ class SysBinder(nn.Module):
             BlockLinear(mlp_hidden_size, slot_size, num_blocks))
         self.prototype_memory = BlockPrototypeMemory(num_prototypes, num_blocks, slot_size)
 
-    def forward(self, inputs):
+    def forward(self, inputs, return_intermediates=False):
+        """
+        inputs: (B, num_inputs, input_size)
+        returns: slots (B, N, slot_size), attn_vis (B, num_inputs, num_slots)
+            block j in slots occupies dims [j*d_block : (j+1)*d_block]
+        if return_intermediates: also returns slot_history, list of (B, N, slot_size) after each iteration
+        """
         B, num_inputs, input_size = inputs.size()
 
         # initialize slots
@@ -106,7 +114,9 @@ class SysBinder(nn.Module):
         k = self.project_k(inputs)  # Shape: [batch_size, T, num_inputs, slot_size].
         v = self.project_v(inputs)  # Shape: [batch_size, T, num_inputs, slot_size].
         k = (self.slot_size ** (-0.5)) * k
-        
+
+        slot_history = [] if return_intermediates else None
+
         for i in range(self.num_iterations):
             slots_prev = slots
             slots = self.norm_slots(slots)
@@ -132,6 +142,11 @@ class SysBinder(nn.Module):
             slots = slots + self.mlp(self.norm_mlp(slots))
             slots = self.prototype_memory(slots)
 
+            if return_intermediates:
+                slot_history.append(slots.detach().clone())
+
+        if return_intermediates:
+            return slots, attn_vis, slot_history
         return slots, attn_vis
     
 

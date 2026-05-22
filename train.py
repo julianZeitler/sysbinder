@@ -136,8 +136,8 @@ if checkpoint is not None:
 for epoch in range(start_epoch, args.epochs):
     model.train()
     
-    for batch, image in enumerate(train_loader):
-        global_step = epoch * train_epoch_size + batch
+    for idx, batch in enumerate(train_loader):
+        global_step = epoch * train_epoch_size + idx
 
         tau = cosine_anneal(
             global_step,
@@ -166,29 +166,29 @@ for epoch in range(start_epoch, args.epochs):
         optimizer.param_groups[1]['lr'] = lr_decay_factor * lr_warmup_factor_enc * args.lr_enc
         optimizer.param_groups[2]['lr'] = lr_decay_factor * lr_warmup_factor_dec * args.lr_dec
 
-        image = image.cuda()
+        batch = batch.cuda()
 
         optimizer.zero_grad()
-        
-        (recon_dvae, cross_entropy, mse, attns) = model(image, tau)
+
+        (recon_dvae, cross_entropy, mse, attns) = model(batch, tau)
 
         if args.use_dp:
             mse = mse.mean()
             cross_entropy = cross_entropy.mean()
 
         loss = mse + cross_entropy
-        
+
         loss.backward()
 
         clip_grad_norm_(model.parameters(), args.clip, 'inf')
 
         optimizer.step()
-        
+
         with torch.no_grad():
-            if batch % log_interval == 0:
+            if idx % log_interval == 0:
                 print('Train Epoch: {:3} [{:5}/{:5}] \t Loss: {:F} \t MSE: {:F}'.format(
-                      epoch+1, batch, train_epoch_size, loss.item(), mse.item()))
-                
+                      epoch+1, idx, train_epoch_size, loss.item(), mse.item()))
+
                 wandb.log({
                     'train/loss': loss.item(),
                     'train/cross_entropy': cross_entropy.item(),
@@ -200,8 +200,8 @@ for epoch in range(start_epoch, args.epochs):
                 }, step=global_step)
 
     with torch.no_grad():
-        recon_tf = (model.module if args.use_dp else model).reconstruct_autoregressive(image[:8])
-        grid = visualize(image, recon_dvae, recon_tf, attns, N=8)
+        recon_tf = (model.module if args.use_dp else model).reconstruct_autoregressive(batch[:8])
+        grid = visualize(batch, recon_dvae, recon_tf, attns, N=8)
         wandb.log({'train_recons': wandb.Image(grid)}, step=(epoch + 1) * train_epoch_size)
     
     with torch.no_grad():
@@ -210,10 +210,10 @@ for epoch in range(start_epoch, args.epochs):
         val_cross_entropy = 0.
         val_mse = 0.
 
-        for batch, image in enumerate(val_loader):
-            image = image.cuda()
+        for idx, batch in enumerate(val_loader):
+            batch = batch.cuda()
 
-            (recon_dvae, cross_entropy, mse, attns) = model(image, tau)
+            (recon_dvae, cross_entropy, mse, attns) = model(batch, tau)
 
             if args.use_dp:
                 mse = mse.mean()
@@ -242,8 +242,8 @@ for epoch in range(start_epoch, args.epochs):
             torch.save(model.module.state_dict() if args.use_dp else model.state_dict(), os.path.join(log_dir, 'best_model.pt'))
 
             if 50 <= epoch:
-                recon_tf = (model.module if args.use_dp else model).reconstruct_autoregressive(image[:8])
-                grid = visualize(image, recon_dvae, recon_tf, attns, N=8)
+                recon_tf = (model.module if args.use_dp else model).reconstruct_autoregressive(batch[:8])
+                grid = visualize(batch, recon_dvae, recon_tf, attns, N=8)
                 wandb.log({'val_recons': wandb.Image(grid)}, step=epoch + 1)
 
         wandb.log({'val/best_loss': best_val_loss}, step=epoch + 1)
