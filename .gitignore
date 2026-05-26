@@ -1,4 +1,5 @@
 data/
-train.sbatch
+*.sbatch
 logs/
 wandb/
+__pycache__/
