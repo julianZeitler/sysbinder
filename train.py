@@ -227,11 +227,13 @@ for epoch in range(start_epoch, args.epochs):
 
         val_loss = val_mse + val_cross_entropy
 
+        val_step = (epoch + 1) * train_epoch_size
+
         wandb.log({
             'val/loss': val_loss,
             'val/cross_entropy': val_cross_entropy,
             'val/mse': val_mse,
-        }, step=epoch + 1)
+        }, step=val_step)
 
         print('====> Epoch: {:3} \t Loss = {:F}'.format(epoch+1, val_loss))
 
@@ -244,9 +246,9 @@ for epoch in range(start_epoch, args.epochs):
             if 50 <= epoch:
                 recon_tf = (model.module if args.use_dp else model).reconstruct_autoregressive(batch[:8])
                 grid = visualize(batch, recon_dvae, recon_tf, attns, N=8)
-                wandb.log({'val_recons': wandb.Image(grid)}, step=epoch + 1)
+                wandb.log({'val_recons': wandb.Image(grid)}, step=val_step)
 
-        wandb.log({'val/best_loss': best_val_loss}, step=epoch + 1)
+        wandb.log({'val/best_loss': best_val_loss}, step=val_step)
 
         checkpoint = {
             'epoch': epoch + 1,
