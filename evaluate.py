@@ -71,6 +71,9 @@ elif args.load_activations is not None:
     args.num_iterations = len(per_iteration)
     args.num_blocks = saved['args'].get('num_blocks', args.num_blocks)
     print(f'  per_iteration: {len(per_iteration)} x {per_iteration[0].shape}')
+    if args.umap_image_hover:
+        _ds = GlobDataset(root=args.data_path, phase='test' if args.test_only else 'all', img_size=args.image_size)
+        img_paths = list(_ds.total_imgs)
 else:
     model = SysBinderImageAutoEncoder(args)
 
