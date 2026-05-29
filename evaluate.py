@@ -4,7 +4,9 @@ import pickle
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torchvision.utils import save_image
 import wandb
 
 from sysbinder import SysBinderImageAutoEncoder
@@ -26,7 +28,7 @@ parser.add_argument('--load_activations', default=None, help='Skip inference, lo
 parser.add_argument('--figures_dir', default='topology_figures', help='Directory to save PNGs and topology cache')
 parser.add_argument('--load_topology_cache', action='store_true', help='Load topology cache from figures_dir, skip ripser+umap')
 parser.add_argument('--test_only', action='store_true')
-parser.add_argument('--last_iter_only', action='store_true', help='Only run topology on the last iteration')
+parser.add_argument('--intermediate', action='store_true', help='Also run topology on intermediate iterations (default: last only)')
 
 parser.add_argument('--wandb_run_id', default=None, help='Resume existing wandb run to log topology figures')
 parser.add_argument('--wandb_project', default='sysbinder')
@@ -34,7 +36,7 @@ parser.add_argument('--wandb_entity', default='jzeitler')
 parser.add_argument('--pca_variance', type=float, default=0.95, help='Variance ratio retained by PCA before homology')
 parser.add_argument('--n_landmarks', type=int, default=500, help='Maxmin landmarks subsampled before PCA/ripser')
 parser.add_argument('--umap_n_landmarks', type=int, default=2000, help='Maxmin landmarks subsampled for UMAP embedding')
-parser.add_argument('--umap_image_hover', action='store_true', help='Embed image paths in UMAP HTML for hover preview')
+parser.add_argument('--umap_image_hover', action='store_true', help='Save slot attention images and embed paths in UMAP HTML for hover preview')
 
 parser.add_argument('--num_iterations', type=int, default=3)
 parser.add_argument('--num_slots', type=int, default=4)
@@ -60,7 +62,7 @@ if args.wandb_run_id is not None:
 
 # ── activations ──────────────────────────────────────────────────────────────
 
-img_paths = None
+slot_img_dir = None
 
 if args.load_topology_cache:
     per_iteration = []  # not needed, topology cache has everything
@@ -71,9 +73,9 @@ elif args.load_activations is not None:
     args.num_iterations = len(per_iteration)
     args.num_blocks = saved['args'].get('num_blocks', args.num_blocks)
     print(f'  per_iteration: {len(per_iteration)} x {per_iteration[0].shape}')
-    if args.umap_image_hover:
-        _ds = GlobDataset(root=args.data_path, phase='test' if args.test_only else 'all', img_size=args.image_size)
-        img_paths = list(_ds.total_imgs)
+    slot_img_dir = saved.get('slot_img_dir')
+    if args.umap_image_hover and slot_img_dir is None:
+        print('Warning: activations.pt has no slot images. Re-run without --load_activations to generate them.')
 else:
     model = SysBinderImageAutoEncoder(args)
 
@@ -86,11 +88,12 @@ else:
     model.eval()
 
     dataset = GlobDataset(root=args.data_path, phase='test' if args.test_only else 'all', img_size=args.image_size)
-    img_paths = list(dataset.total_imgs) if args.umap_image_hover else None
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False,
                         num_workers=args.num_workers, pin_memory=True, drop_last=False)
 
     all_slot_histories = []
+    all_attn_vis = []
+    all_images = []
 
     with torch.no_grad():
         for batch in loader:
@@ -105,18 +108,52 @@ else:
             emb_set = model.image_encoder.mlp(model.image_encoder.layer_norm(emb_set))
             emb_set = emb_set.reshape(B, H_enc * W_enc, args.d_model)
 
-            _, _, slot_history = model.image_encoder.sysbinder(emb_set, return_intermediates=True)
+            _, attn_vis, slot_history = model.image_encoder.sysbinder(emb_set, return_intermediates=True)
+            # attn_vis: (B, H_enc*W_enc, num_slots) — from last sysbinder iteration
 
             all_slot_histories.append([s.cpu() for s in slot_history])
+            all_attn_vis.append(attn_vis.cpu())
+            all_images.append(batch.cpu())
 
     per_iteration = [
         torch.cat([batch[i] for batch in all_slot_histories], dim=0)
         for i in range(args.num_iterations)
     ]
 
+    # ── save slot attention visualizations ───────────────────────────────────
+    if args.umap_image_hover:
+        slot_img_dir = os.path.abspath(args.output_path.replace('.pt', '_slot_images'))
+        os.makedirs(slot_img_dir, exist_ok=True)
+        print(f'Saving slot attention images to {slot_img_dir}...')
+
+        H, W = args.image_size, args.image_size
+        global_idx = 0
+        for attn_batch, img_batch in zip(all_attn_vis, all_images):
+            B = img_batch.shape[0]
+            # attn_batch: (B, H_enc*W_enc, num_slots) → (B, num_slots, H_enc*W_enc)
+            attn = attn_batch.transpose(1, 2)
+            # reshape to spatial: (B, num_slots, H_enc, W_enc)
+            H_enc_b = W_enc_b = int(attn.shape[-1] ** 0.5)
+            attn = attn.reshape(B, args.num_slots, H_enc_b, W_enc_b)
+            # upsample to full image size: (B*num_slots, 1, H, W)
+            attn_up = F.interpolate(
+                attn.flatten(0, 1).unsqueeze(1),
+                size=(H, W), mode='bilinear', align_corners=False
+            ).reshape(B, args.num_slots, 1, H, W)
+            # blend: image * attn + (1 - attn) white background
+            vis = img_batch.unsqueeze(1) * attn_up + (1.0 - attn_up)  # (B, num_slots, C, H, W)
+
+            for b in range(B):
+                for s in range(args.num_slots):
+                    save_image(vis[b, s], os.path.join(slot_img_dir, f'{global_idx:06d}_{s}.png'))
+                global_idx += 1
+
+        print(f'  Saved {global_idx * args.num_slots} slot images.')
+
     torch.save({
         'per_iteration': per_iteration,
         'args': vars(args),
+        'slot_img_dir': slot_img_dir,
     }, args.output_path)
 
     print(f'Saved activations for {len(dataset)} images to {args.output_path}')
@@ -127,7 +164,7 @@ else:
 os.makedirs(args.figures_dir, exist_ok=True)
 cache_path = os.path.join(args.figures_dir, 'topology_cache.pkl')
 
-iters = [len(per_iteration) - 1] if args.last_iter_only else range(len(per_iteration))
+iters = range(len(per_iteration)) if args.intermediate else [len(per_iteration) - 1]
 
 if args.load_topology_cache:
     print(f'Loading topology cache from {cache_path}')
@@ -143,8 +180,15 @@ else:
         for j in range(args.num_blocks):
             print(f'  block {j+1}/{args.num_blocks}', flush=True)
             block = arr[:, :, j * d_block:(j + 1) * d_block]
-            data = block.reshape(N, -1)
+            data = block.reshape(N * num_slots, d_block)
             pcs = preprocess(data, variance_ratio=args.pca_variance, n_landmarks=args.n_landmarks)
+            if args.umap_image_hover and slot_img_dir:
+                img_paths = [
+                    os.path.join(slot_img_dir, f'{n:06d}_{s}.png')
+                    for n in range(N) for s in range(num_slots)
+                ]
+            else:
+                img_paths = None
             entry = compute_topology(pcs, umap_n_landmarks=args.umap_n_landmarks, raw_data=data, image_paths=img_paths)
             topology_cache[f'iter{i}/block{j}'] = entry
 
