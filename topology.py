@@ -16,7 +16,7 @@ except ImportError:
     _HAS_RIPSER_PP = False
 
 
-def maxmin_subsample(data: NDArray[np.floating], n_landmarks: int) -> NDArray[np.floating]:
+def maxmin_subsample(data: NDArray[np.floating], n_landmarks: int, return_indices: bool = False):
     n = data.shape[0]
     n_lm = min(n_landmarks, n)
     idx = [np.random.randint(n)]
@@ -25,6 +25,8 @@ def maxmin_subsample(data: NDArray[np.floating], n_landmarks: int) -> NDArray[np
         d = np.sum((data - data[idx[-1]]) ** 2, axis=1)
         np.minimum(min_dists, d, out=min_dists)
         idx.append(int(np.argmax(min_dists)))
+    if return_indices:
+        return data[idx], np.array(idx)
     return data[idx]
 
 
@@ -44,6 +46,7 @@ def compute_topology(
     coeff: int = 47,
     umap_n_landmarks: int = 2000,
     raw_data: NDArray[np.floating] = None,
+    image_paths: list = None,
 ) -> dict:
     """Run ripser + UMAP. Returns raw data dict for caching."""
     if _HAS_RIPSER_PP:
@@ -58,8 +61,13 @@ def compute_topology(
         from cuml.manifold.umap import UMAP
     except ImportError:
         from umap import UMAP
-    umap_data = maxmin_subsample(raw_data, umap_n_landmarks) if raw_data is not None else pcs
+    if raw_data is not None:
+        umap_data, umap_idx = maxmin_subsample(raw_data, umap_n_landmarks, return_indices=True)
+    else:
+        umap_data = pcs
+        umap_idx = np.arange(len(pcs))
     umap_embedding = UMAP(n_components=3).fit_transform(umap_data)
+    umap_image_paths = [image_paths[i] for i in umap_idx] if image_paths is not None else None
 
     def _sorted_lifetimes(dgm):
         lt = dgm[:, 1] - dgm[:, 0]
@@ -82,7 +90,7 @@ def compute_topology(
         'n_umap_landmarks': float(umap_data.shape[0]),
     }
 
-    return {'pcs': pcs, 'dgms': dgms, 'umap_embedding': umap_embedding, 'metrics': metrics}
+    return {'pcs': pcs, 'dgms': dgms, 'umap_embedding': umap_embedding, 'umap_image_paths': umap_image_paths, 'metrics': metrics}
 
 
 def figures_from_cache(entry: dict) -> tuple:
@@ -91,10 +99,11 @@ def figures_from_cache(entry: dict) -> tuple:
     umap_embedding = entry['umap_embedding']
     n_lm = int(entry['metrics']['n_landmarks'])
     n_pc = int(entry['metrics']['n_pcs'])
+    image_paths = entry.get('umap_image_paths')
     return (
         _barcode_figure(dgms, n_lm, n_pc),
         _diagram_figure(dgms, n_lm, n_pc),
-        *_umap_figure(umap_embedding, n_lm, n_pc, int(entry['metrics'].get('n_umap_landmarks', n_lm))),
+        *_umap_figure(umap_embedding, n_lm, n_pc, int(entry['metrics'].get('n_umap_landmarks', n_lm)), image_paths=image_paths),
     )
 
 
@@ -190,7 +199,7 @@ def _diagram_figure(dgms, n_landmarks, n_pc) -> go.Figure:
     return fig
 
 
-def _umap_figure(umap_embedding, n_landmarks, n_pc, n_umap_landmarks=None) -> tuple:
+def _umap_figure(umap_embedding, n_landmarks, n_pc, n_umap_landmarks=None, image_paths=None) -> tuple:
     n_umap_landmarks = n_umap_landmarks or n_landmarks
 
     fig_3d = go.Figure(go.Scatter3d(
@@ -199,6 +208,7 @@ def _umap_figure(umap_embedding, n_landmarks, n_pc, n_umap_landmarks=None) -> tu
         z=umap_embedding[:, 2],
         mode='markers',
         marker=dict(size=2, color='#1f77b4', opacity=0.6),
+        customdata=image_paths,
     ))
     fig_3d.update_layout(
         title=f'UMAP 3D — {n_pc} PCs, {n_umap_landmarks} points',
@@ -210,6 +220,7 @@ def _umap_figure(umap_embedding, n_landmarks, n_pc, n_umap_landmarks=None) -> tu
         y=umap_embedding[:, 1],
         mode='markers',
         marker=dict(size=3, color='#1f77b4', opacity=0.6),
+        customdata=image_paths,
     ))
     fig_2d.update_layout(
         title=f'UMAP 2D projection — {n_pc} PCs, {n_umap_landmarks} points',
@@ -218,6 +229,40 @@ def _umap_figure(umap_embedding, n_landmarks, n_pc, n_umap_landmarks=None) -> tu
     )
 
     return fig_2d, fig_3d
+
+
+_HOVER_IMAGE_JS = """
+(function() {
+    var gd = document.querySelector('.plotly-graph-div');
+    if (!gd) return;
+    var tip = document.createElement('div');
+    Object.assign(tip.style, {
+        position: 'fixed', background: '#fff', border: '1px solid #aaa',
+        padding: '3px', borderRadius: '4px', display: 'none',
+        pointerEvents: 'none', zIndex: '9999',
+        boxShadow: '2px 2px 8px rgba(0,0,0,0.25)'
+    });
+    document.body.appendChild(tip);
+    gd.on('plotly_hover', function(data) {
+        var cd = data.points[0].customdata;
+        if (!cd) return;
+        tip.innerHTML = '<img src="file://' + cd + '" style="max-width:180px;max-height:180px;display:block;">';
+        tip.style.display = 'block';
+    });
+    gd.on('plotly_unhover', function() { tip.style.display = 'none'; });
+    document.addEventListener('mousemove', function(e) {
+        if (tip.style.display !== 'none') {
+            tip.style.left = (e.clientX + 16) + 'px';
+            tip.style.top = Math.max(0, e.clientY - 16) + 'px';
+        }
+    });
+})();
+"""
+
+
+def write_umap_html(fig: go.Figure, path: str) -> None:
+    has_images = any(getattr(t, 'customdata', None) is not None for t in fig.data)
+    fig.write_html(path, post_script=_HOVER_IMAGE_JS if has_images else None)
 
 
 def save_pngs(entry: dict, base_path: str) -> None:

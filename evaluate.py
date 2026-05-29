@@ -9,7 +9,7 @@ import wandb
 
 from sysbinder import SysBinderImageAutoEncoder
 from data import GlobDataset
-from topology import preprocess, compute_topology, figures_from_cache, save_pngs
+from topology import preprocess, compute_topology, figures_from_cache, save_pngs, write_umap_html
 
 parser = argparse.ArgumentParser()
 
@@ -34,6 +34,7 @@ parser.add_argument('--wandb_entity', default='jzeitler')
 parser.add_argument('--pca_variance', type=float, default=0.95, help='Variance ratio retained by PCA before homology')
 parser.add_argument('--n_landmarks', type=int, default=500, help='Maxmin landmarks subsampled before PCA/ripser')
 parser.add_argument('--umap_n_landmarks', type=int, default=2000, help='Maxmin landmarks subsampled for UMAP embedding')
+parser.add_argument('--umap_image_hover', action='store_true', help='Embed image paths in UMAP HTML for hover preview')
 
 parser.add_argument('--num_iterations', type=int, default=3)
 parser.add_argument('--num_slots', type=int, default=4)
@@ -59,6 +60,8 @@ if args.wandb_run_id is not None:
 
 # ── activations ──────────────────────────────────────────────────────────────
 
+img_paths = None
+
 if args.load_topology_cache:
     per_iteration = []  # not needed, topology cache has everything
 elif args.load_activations is not None:
@@ -80,6 +83,7 @@ else:
     model.eval()
 
     dataset = GlobDataset(root=args.data_path, phase='test' if args.test_only else 'all', img_size=args.image_size)
+    img_paths = list(dataset.total_imgs) if args.umap_image_hover else None
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False,
                         num_workers=args.num_workers, pin_memory=True, drop_last=False)
 
@@ -138,7 +142,7 @@ else:
             block = arr[:, :, j * d_block:(j + 1) * d_block]
             data = block.reshape(N, -1)
             pcs = preprocess(data, variance_ratio=args.pca_variance, n_landmarks=args.n_landmarks)
-            entry = compute_topology(pcs, umap_n_landmarks=args.umap_n_landmarks, raw_data=data)
+            entry = compute_topology(pcs, umap_n_landmarks=args.umap_n_landmarks, raw_data=data, image_paths=img_paths)
             topology_cache[f'iter{i}/block{j}'] = entry
 
     with open(cache_path, 'wb') as f:
@@ -159,7 +163,7 @@ for key, entry in topology_cache.items():
         base = os.path.join(args.figures_dir, key.replace("/", "__"))
         save_pngs(entry, base)
         _, _, _, umap_3d = figures_from_cache(entry)
-        umap_3d.write_html(base + '__umap.html')
+        write_umap_html(umap_3d, base + '__umap.html')
     log_dict.update({f'{prefix}/{k}': v for k, v in entry['metrics'].items()})
 
 if args.wandb_run_id is not None:
