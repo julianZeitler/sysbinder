@@ -246,7 +246,7 @@ _HOVER_IMAGE_JS = """
     gd.on('plotly_hover', function(data) {
         var cd = data.points[0].customdata;
         if (!cd) return;
-        tip.innerHTML = '<img src="file://' + cd + '" style="max-width:180px;max-height:180px;display:block;">';
+        tip.innerHTML = '<img src="' + cd + '" style="max-width:180px;max-height:180px;display:block;">';
         tip.style.display = 'block';
     });
     gd.on('plotly_unhover', function() { tip.style.display = 'none'; });
@@ -261,6 +261,11 @@ _HOVER_IMAGE_JS = """
 
 
 def write_umap_html(fig: go.Figure, path: str) -> None:
+    import os
+    html_dir = os.path.dirname(os.path.abspath(path))
+    for trace in fig.data:
+        if getattr(trace, 'customdata', None) is not None:
+            trace.customdata = [os.path.relpath(p, html_dir) for p in trace.customdata]
     has_images = any(getattr(t, 'customdata', None) is not None for t in fig.data)
     fig.write_html(path, post_script=_HOVER_IMAGE_JS if has_images else None)
 
