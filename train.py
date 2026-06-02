@@ -19,54 +19,33 @@ from datetime import datetime
 from sysbinder import SysBinderImageAutoEncoder
 from data import GlobDataset
 from utils import linear_warmup, cosine_anneal
+from config import load_config, save_config, flat_dict
 
 parser = argparse.ArgumentParser()
 
+# Model architecture and training hyperparameters live in the YAML config.
+parser.add_argument('--config', default='configs/default.yaml',
+                    help='YAML with model + train sections')
+
+# Runtime-only arguments (not part of the model/training config).
 parser.add_argument('--seed', type=int, default=0)
-parser.add_argument('--batch_size', type=int, default=40)
-parser.add_argument('--num_workers', type=int, default=4)
-parser.add_argument('--image_size', type=int, default=128)
-parser.add_argument('--image_channels', type=int, default=3)
-
-parser.add_argument('--checkpoint_path', default='checkpoint.pt.tar')
-parser.add_argument('--data_path', default='data/*.png')
-parser.add_argument('--log_path', default='logs/')
-
-parser.add_argument('--lr_dvae', type=float, default=3e-4)
-parser.add_argument('--lr_enc', type=float, default=1e-4)
-parser.add_argument('--lr_dec', type=float, default=3e-4)
-parser.add_argument('--lr_warmup_steps', type=int, default=30000)
-parser.add_argument('--lr_half_life', type=int, default=250000)
-parser.add_argument('--clip', type=float, default=0.05)
-parser.add_argument('--epochs', type=int, default=500)
-
-parser.add_argument('--num_iterations', type=int, default=3)
-parser.add_argument('--num_slots', type=int, default=4)
-parser.add_argument('--num_blocks', type=int, default=8)
-parser.add_argument('--cnn_hidden_size', type=int, default=512)
-parser.add_argument('--slot_size', type=int, default=2048)
-parser.add_argument('--mlp_hidden_size', type=int, default=192)
-parser.add_argument('--num_prototypes', type=int, default=64)
-
-parser.add_argument('--vocab_size', type=int, default=4096)
-parser.add_argument('--num_decoder_layers', type=int, default=8)
-parser.add_argument('--num_decoder_heads', type=int, default=4)
-parser.add_argument('--d_model', type=int, default=192)
-parser.add_argument('--dropout', type=int, default=0.1)
-
-parser.add_argument('--tau_start', type=float, default=1.0)
-parser.add_argument('--tau_final', type=float, default=0.1)
-parser.add_argument('--tau_steps', type=int, default=30000)
-
-parser.add_argument('--use_dp', default=True, action='store_true')
+parser.add_argument('--num-workers', type=int, default=4)
+parser.add_argument('--checkpoint-path', default='checkpoint.pt.tar')
+parser.add_argument('--data-path', default='data/*.png')
+parser.add_argument('--log-path', default='logs/')
 
 args = parser.parse_args()
+
+cfg = load_config(args.config)
+model_cfg, train_cfg = cfg.model, cfg.train
 
 torch.manual_seed(args.seed)
 
 log_dir = os.path.join(args.log_path, datetime.today().isoformat())
 os.makedirs(log_dir, exist_ok=True)
-wandb.init(entity='jzeitler', project='sysbinder', config=vars(args))
+save_config(cfg, os.path.join(log_dir, 'config.yaml'))
+wandb.init(entity='jzeitler', project='sysbinder',
+           config={**flat_dict(cfg), **vars(args)})
 
 
 def visualize(image, recon_dvae, recon_tf, attns, N=8):
@@ -80,19 +59,19 @@ def visualize(image, recon_dvae, recon_tf, attns, N=8):
     ), dim=1).flatten(end_dim=1)
 
     # grid
-    grid = vutils.make_grid(tiles, nrow=(1 + 1 + 1 + args.num_slots), pad_value=0.8)
+    grid = vutils.make_grid(tiles, nrow=(1 + 1 + 1 + model_cfg.num_slots), pad_value=0.8)
 
     return grid
 
 
-train_dataset = GlobDataset(root=args.data_path, phase='train', img_size=args.image_size)
-val_dataset = GlobDataset(root=args.data_path, phase='val', img_size=args.image_size)
+train_dataset = GlobDataset(root=args.data_path, phase='train', img_size=model_cfg.image_size)
+val_dataset = GlobDataset(root=args.data_path, phase='val', img_size=model_cfg.image_size)
 
 train_sampler = None
 val_sampler = None
 
 loader_kwargs = {
-    'batch_size': args.batch_size,
+    'batch_size': train_cfg.batch_size,
     'shuffle': True,
     'num_workers': args.num_workers,
     'pin_memory': True,
@@ -107,7 +86,7 @@ val_epoch_size = len(val_loader)
 
 log_interval = train_epoch_size // 5
 
-model = SysBinderImageAutoEncoder(args)
+model = SysBinderImageAutoEncoder(model_cfg)
 
 if os.path.isfile(args.checkpoint_path):
     checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
@@ -122,18 +101,18 @@ else:
     best_epoch = 0
 
 model = model.cuda()
-if args.use_dp:
+if train_cfg.use_dp:
     model = DP(model)
 
 optimizer = Adam([
-    {'params': (x[1] for x in model.named_parameters() if 'dvae' in x[0]), 'lr': args.lr_dvae},
+    {'params': (x[1] for x in model.named_parameters() if 'dvae' in x[0]), 'lr': train_cfg.lr_dvae},
     {'params': (x[1] for x in model.named_parameters() if 'image_encoder' in x[0]), 'lr': 0.0},
     {'params': (x[1] for x in model.named_parameters() if 'image_decoder' in x[0]), 'lr': 0.0},
 ])
 if checkpoint is not None:
     optimizer.load_state_dict(checkpoint['optimizer'])
 
-for epoch in range(start_epoch, args.epochs):
+for epoch in range(start_epoch, train_cfg.epochs):
     model.train()
     
     for idx, batch in enumerate(train_loader):
@@ -141,30 +120,30 @@ for epoch in range(start_epoch, args.epochs):
 
         tau = cosine_anneal(
             global_step,
-            args.tau_start,
-            args.tau_final,
+            train_cfg.tau_start,
+            train_cfg.tau_final,
             0,
-            args.tau_steps)
+            train_cfg.tau_steps)
 
         lr_warmup_factor_enc = linear_warmup(
             global_step,
             0.,
             1.0,
             0.,
-            args.lr_warmup_steps)
+            train_cfg.lr_warmup_steps)
 
         lr_warmup_factor_dec = linear_warmup(
             global_step,
             0.,
             1.0,
             0,
-            args.lr_warmup_steps)
+            train_cfg.lr_warmup_steps)
 
-        lr_decay_factor = math.exp(global_step / args.lr_half_life * math.log(0.5))
+        lr_decay_factor = math.exp(global_step / train_cfg.lr_half_life * math.log(0.5))
 
-        optimizer.param_groups[0]['lr'] = args.lr_dvae
-        optimizer.param_groups[1]['lr'] = lr_decay_factor * lr_warmup_factor_enc * args.lr_enc
-        optimizer.param_groups[2]['lr'] = lr_decay_factor * lr_warmup_factor_dec * args.lr_dec
+        optimizer.param_groups[0]['lr'] = train_cfg.lr_dvae
+        optimizer.param_groups[1]['lr'] = lr_decay_factor * lr_warmup_factor_enc * train_cfg.lr_enc
+        optimizer.param_groups[2]['lr'] = lr_decay_factor * lr_warmup_factor_dec * train_cfg.lr_dec
 
         batch = batch.cuda()
 
@@ -172,7 +151,7 @@ for epoch in range(start_epoch, args.epochs):
 
         (recon_dvae, cross_entropy, mse, attns) = model(batch, tau)
 
-        if args.use_dp:
+        if train_cfg.use_dp:
             mse = mse.mean()
             cross_entropy = cross_entropy.mean()
 
@@ -180,7 +159,7 @@ for epoch in range(start_epoch, args.epochs):
 
         loss.backward()
 
-        clip_grad_norm_(model.parameters(), args.clip, 'inf')
+        clip_grad_norm_(model.parameters(), train_cfg.clip, 'inf')
 
         optimizer.step()
 
@@ -200,7 +179,7 @@ for epoch in range(start_epoch, args.epochs):
                 }, step=global_step)
 
     with torch.no_grad():
-        recon_tf = (model.module if args.use_dp else model).reconstruct_autoregressive(batch[:8])
+        recon_tf = (model.module if train_cfg.use_dp else model).reconstruct_autoregressive(batch[:8])
         grid = visualize(batch, recon_dvae, recon_tf, attns, N=8)
         wandb.log({'train_recons': wandb.Image(grid)}, step=(epoch + 1) * train_epoch_size)
     
@@ -215,7 +194,7 @@ for epoch in range(start_epoch, args.epochs):
 
             (recon_dvae, cross_entropy, mse, attns) = model(batch, tau)
 
-            if args.use_dp:
+            if train_cfg.use_dp:
                 mse = mse.mean()
                 cross_entropy = cross_entropy.mean()
 
@@ -241,10 +220,10 @@ for epoch in range(start_epoch, args.epochs):
             best_val_loss = val_loss
             best_epoch = epoch + 1
 
-            torch.save(model.module.state_dict() if args.use_dp else model.state_dict(), os.path.join(log_dir, 'best_model.pt'))
+            torch.save(model.module.state_dict() if train_cfg.use_dp else model.state_dict(), os.path.join(log_dir, 'best_model.pt'))
 
             if 50 <= epoch:
-                recon_tf = (model.module if args.use_dp else model).reconstruct_autoregressive(batch[:8])
+                recon_tf = (model.module if train_cfg.use_dp else model).reconstruct_autoregressive(batch[:8])
                 grid = visualize(batch, recon_dvae, recon_tf, attns, N=8)
                 wandb.log({'val_recons': wandb.Image(grid)}, step=val_step)
 
@@ -254,7 +233,7 @@ for epoch in range(start_epoch, args.epochs):
             'epoch': epoch + 1,
             'best_val_loss': best_val_loss,
             'best_epoch': best_epoch,
-            'model': model.module.state_dict() if args.use_dp else model.state_dict(),
+            'model': model.module.state_dict() if train_cfg.use_dp else model.state_dict(),
             'optimizer': optimizer.state_dict(),
         }
 

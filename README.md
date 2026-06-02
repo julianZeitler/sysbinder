@@ -14,12 +14,38 @@ Gautam Singh and Yeongbin Kim and Sungjin Ahn
 ### Datasets
 The datasets tested in the paper (CLEVR-Easy, CLEVR-Hard, and CLEVR-Tex) can be downloaded via this [link](https://drive.google.com/drive/folders/1FKEjZnKfu9KnSGfnr8oGVUBSPqnptzJc?usp=sharing).
 
+### Configuration
+Model architecture and training hyperparameters live in a YAML file with two
+sections, `model` (architecture — must match a checkpoint) and `train`
+(optimization). See `configs/default.yaml`. To run an experiment, copy it and
+edit the fields you want:
+```bash
+cp configs/default.yaml configs/my_run.yaml
+python train.py --config configs/my_run.yaml
+```
+Runtime concerns (data paths, seed, wandb, checkpointing) remain CLI flags.
+`train.py` writes the resolved config to `<log_path>/<timestamp>/config.yaml`
+next to `best_model.pt`, so evaluation can reuse the exact architecture with no
+flags to retype:
+```bash
+python evaluate.py --config logs/<run>/config.yaml \
+                   --checkpoint-path logs/<run>/checkpoint.pt.tar
+```
+
+`evaluate.py` writes its outputs (activations, topology figures + cache, slot
+images, and a copy of `config.yaml`) into a single directory. By default this is
+the **checkpoint's own directory** (the training run's `logs/<run>/`), so eval
+artifacts sit beside the model they came from. Pass `--output-path <dir>` to
+write elsewhere. (`--wandb-run-id` only controls wandb logging, not where files
+land.)
+
 ### Training
-To train the model, simply execute:
+To train the model with the default config, simply execute:
 ```bash
 python train.py
 ```
-Check `train.py` to see the full list of training arguments. You can use the `--data_path` argument to point to the set of images via a glob pattern.
+Use `--data-path` to point to the set of images via a glob pattern, and
+`--config` to select a YAML config (defaults to `configs/default.yaml`).
 
 ### Outputs
 The training code produces Tensorboard logs. To see these logs, run Tensorboard on the logging directory that was provided in the training argument `--log_path`. These logs contain the training loss curves and visualizations of reconstructions and object attention maps.
