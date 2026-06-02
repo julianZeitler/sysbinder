@@ -49,16 +49,23 @@ model_cfg = cfg.model
 torch.manual_seed(args.seed)
 
 # ── output directory ──────────────────────────────────────────────────────────
-# Default: write alongside the checkpoint (its logs/<run>/ dir). Override with --output-path.
-eval_dir = args.output_path or os.path.dirname(os.path.abspath(args.checkpoint_path))
+# Default: write alongside the source — the loaded activations.pt if --load-activations
+# is given, else the checkpoint. Override with --output-path.
+if args.output_path:
+    eval_dir = args.output_path
+elif args.load_activations is not None:
+    eval_dir = os.path.dirname(os.path.abspath(args.load_activations))
+else:
+    eval_dir = os.path.dirname(os.path.abspath(args.checkpoint_path))
 os.makedirs(eval_dir, exist_ok=True)
 
 activations_path = os.path.join(eval_dir, 'activations.pt')
 figures_dir = os.path.join(eval_dir, 'topology_figures')
 
-# record the config used (don't clobber a training run's config.yaml when reusing its dir)
+# record the config used (skip when loading activations — that run already has its own,
+# and don't clobber a training run's config.yaml when reusing its dir)
 config_dst = os.path.join(eval_dir, 'config.yaml')
-if not os.path.exists(config_dst):
+if args.load_activations is None and not os.path.exists(config_dst):
     save_config(cfg, config_dst)
 print(f'Eval outputs → {eval_dir}')
 
