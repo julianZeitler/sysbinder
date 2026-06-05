@@ -30,7 +30,8 @@ parser.add_argument('--output-path', default=None,
                     help='Directory for all eval outputs (default: the checkpoint\'s directory)')
 parser.add_argument('--load-activations', default=None, help='Skip inference, load existing activations.pt')
 parser.add_argument('--load-topology-cache', action='store_true', help='Load topology cache from <eval_dir>/topology_figures, skip ripser+umap')
-parser.add_argument('--test-only', action='store_true')
+parser.add_argument('--all', dest='eval_all', action='store_true',
+                    help='Evaluate the full dataset instead of only the held-out test split (default: test)')
 parser.add_argument('--intermediate', action='store_true', help='Also run topology on intermediate iterations (default: last only)')
 
 parser.add_argument('--wandb-run-id', default=None, help='Resume existing wandb run to log topology figures')
@@ -102,7 +103,7 @@ else:
     model = model.cuda()
     model.eval()
 
-    dataset = GlobDataset(root=args.data_path, phase='test' if args.test_only else 'all', img_size=model_cfg.image_size)
+    dataset = GlobDataset(root=args.data_path, phase='all' if args.eval_all else 'test', img_size=model_cfg.image_size)
     loader = DataLoader(dataset, batch_size=cfg.train.batch_size, shuffle=False,
                         num_workers=args.num_workers, pin_memory=True, drop_last=False)
 
