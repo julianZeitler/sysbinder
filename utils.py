@@ -279,6 +279,29 @@ class CartesianPositionalEmbedding(nn.Module):
         return inputs + self.projection(self.pe)
 
 
+def sigreg(x, global_step, num_slices=256):
+    """Sliced Independence Gaussian Regularizer (SIG-Reg).
+
+    x: (N, D) — flattened latent vectors (e.g. B*num_slots, slot_size)
+    Encourages each 1-D projection to be standard Gaussian via the Epps-Pulley statistic.
+    Seed is tied to global_step so projections are consistent across DP replicas.
+    Returns a scalar.
+    """
+    g = torch.Generator(device=x.device)
+    g.manual_seed(global_step)
+    A = torch.randn(x.size(1), num_slices, generator=g, device=x.device)
+    A = A / A.norm(p=2, dim=0)
+
+    t = torch.linspace(-5, 5, 17, device=x.device)
+    exp_f = torch.exp(-0.5 * t ** 2)  # theoretical CF for N(0,1)
+
+    x_t = (x @ A).unsqueeze(2) * t  # (N, num_slices, T)
+    ecf = torch.exp(1j * x_t).mean(0)  # (num_slices, T) empirical CF
+
+    err = (ecf - exp_f).abs().square() * exp_f
+    return torch.trapezoid(err, t, dim=1).mean()  # scalar
+
+
 class OneHotDictionary(nn.Module):
     def __init__(self, vocab_size, emb_size):
         super().__init__()

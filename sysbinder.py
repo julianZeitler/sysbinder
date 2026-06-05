@@ -261,6 +261,8 @@ class SysBinderImageAutoEncoder(nn.Module):
         slots, attns = self.image_encoder.sysbinder(emb_set)  # slots: B, num_slots, slot_size
                                                               # attns: B, num_slots, num_inputs
 
+        slots_raw = slots  # (B, num_slots, slot_size) — before block coupling
+
         attns = attns\
             .transpose(-1, -2)\
             .reshape(B, self.num_slots, 1, H_enc, W_enc)\
@@ -283,7 +285,8 @@ class SysBinderImageAutoEncoder(nn.Module):
         return (dvae_recon.clamp(0., 1.),
                 cross_entropy,
                 dvae_mse,
-                attns)
+                attns,
+                slots_raw)
 
     def encode(self, image):
         """

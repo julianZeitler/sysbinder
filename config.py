@@ -64,6 +64,9 @@ class TrainConfig:
 
     use_dp: bool = True
 
+    sigreg_weight: float = 0.0
+    sigreg_num_slices: int = 256
+
 
 @dataclass
 class Config:

@@ -18,7 +18,7 @@ from datetime import datetime
 
 from sysbinder import SysBinderImageAutoEncoder
 from data import GlobDataset
-from utils import linear_warmup, cosine_anneal
+from utils import linear_warmup, cosine_anneal, sigreg
 from config import load_config, save_config, flat_dict
 
 parser = argparse.ArgumentParser()
@@ -149,13 +149,19 @@ for epoch in range(start_epoch, train_cfg.epochs):
 
         optimizer.zero_grad()
 
-        (recon_dvae, cross_entropy, mse, attns) = model(batch, tau)
+        (recon_dvae, cross_entropy, mse, attns, slots_raw) = model(batch, tau)
 
         if train_cfg.use_dp:
             mse = mse.mean()
             cross_entropy = cross_entropy.mean()
 
         loss = mse + cross_entropy
+
+        sigreg_loss = torch.tensor(0.0, device=batch.device)
+        if train_cfg.sigreg_weight > 0:
+            slots_flat = slots_raw.flatten(0, 1)  # (B * num_slots, slot_size)
+            sigreg_loss = sigreg(slots_flat, global_step, train_cfg.sigreg_num_slices)
+            loss = loss + train_cfg.sigreg_weight * sigreg_loss
 
         loss.backward()
 
@@ -172,6 +178,7 @@ for epoch in range(start_epoch, train_cfg.epochs):
                     'train/loss': loss.item(),
                     'train/cross_entropy': cross_entropy.item(),
                     'train/mse': mse.item(),
+                    'train/sigreg': sigreg_loss.item(),
                     'train/tau': tau,
                     'train/lr_dvae': optimizer.param_groups[0]['lr'],
                     'train/lr_enc': optimizer.param_groups[1]['lr'],
@@ -188,11 +195,12 @@ for epoch in range(start_epoch, train_cfg.epochs):
 
         val_cross_entropy = 0.
         val_mse = 0.
+        val_sigreg = 0.
 
         for idx, batch in enumerate(val_loader):
             batch = batch.cuda()
 
-            (recon_dvae, cross_entropy, mse, attns) = model(batch, tau)
+            (recon_dvae, cross_entropy, mse, attns, slots_raw) = model(batch, tau)
 
             if train_cfg.use_dp:
                 mse = mse.mean()
@@ -201,10 +209,16 @@ for epoch in range(start_epoch, train_cfg.epochs):
             val_cross_entropy += cross_entropy.item()
             val_mse += mse.item()
 
-        val_cross_entropy /= (val_epoch_size)
-        val_mse /= (val_epoch_size)
+            if train_cfg.sigreg_weight > 0:
+                val_step_idx = (epoch * val_epoch_size + idx)
+                slots_flat = slots_raw.flatten(0, 1)
+                val_sigreg += sigreg(slots_flat, val_step_idx, train_cfg.sigreg_num_slices).item()
 
-        val_loss = val_mse + val_cross_entropy
+        val_cross_entropy /= val_epoch_size
+        val_mse /= val_epoch_size
+        val_sigreg /= val_epoch_size
+
+        val_loss = val_mse + val_cross_entropy + train_cfg.sigreg_weight * val_sigreg
 
         val_step = (epoch + 1) * train_epoch_size
 
@@ -212,6 +226,7 @@ for epoch in range(start_epoch, train_cfg.epochs):
             'val/loss': val_loss,
             'val/cross_entropy': val_cross_entropy,
             'val/mse': val_mse,
+            'val/sigreg': val_sigreg,
         }, step=val_step)
 
         print('====> Epoch: {:3} \t Loss = {:F}'.format(epoch+1, val_loss))
