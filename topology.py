@@ -47,8 +47,13 @@ def compute_topology(
     umap_n_landmarks: int = 2000,
     raw_data: NDArray[np.floating] = None,
     image_paths: list = None,
+    memory_data: NDArray[np.floating] = None,
 ) -> dict:
-    """Run ripser + UMAP. Returns raw data dict for caching."""
+    """Run ripser + UMAP. Returns raw data dict for caching.
+
+    memory_data: (num_prototypes, d_block) block prototype memories. When given,
+    they are embedded jointly with the slot landmarks so they share one UMAP map.
+    """
     if _HAS_RIPSER_PP:
         dist = pairwise_distances(pcs, metric='cosine').astype(np.float32)
         thresh_flag = f'--threshold {thresh}' if np.isfinite(thresh) else ''
@@ -66,7 +71,18 @@ def compute_topology(
     else:
         umap_data = pcs
         umap_idx = np.arange(len(pcs))
-    umap_embedding = UMAP(n_components=3).fit_transform(umap_data)
+
+    # Embed the block memories jointly with the slot landmarks so both share one map.
+    n_mem = 0 if memory_data is None else len(memory_data)
+    fit_data = umap_data if n_mem == 0 else np.vstack([umap_data, memory_data.astype(umap_data.dtype)])
+
+    full_embedding = UMAP(n_components=3).fit_transform(fit_data)
+    if n_mem:
+        umap_embedding = full_embedding[:-n_mem]
+        memory_embedding = full_embedding[-n_mem:]
+    else:
+        umap_embedding = full_embedding
+        memory_embedding = None
     umap_image_paths = [image_paths[i] for i in umap_idx] if image_paths is not None else None
 
     def _sorted_lifetimes(dgm):
@@ -88,9 +104,12 @@ def compute_topology(
         'n_pcs':            float(pcs.shape[1]),
         'n_landmarks':      float(pcs.shape[0]),
         'n_umap_landmarks': float(umap_data.shape[0]),
+        'n_memories':       float(n_mem),
     }
 
-    return {'pcs': pcs, 'dgms': dgms, 'umap_embedding': umap_embedding, 'umap_image_paths': umap_image_paths, 'metrics': metrics}
+    return {'pcs': pcs, 'dgms': dgms, 'umap_embedding': umap_embedding,
+            'umap_image_paths': umap_image_paths, 'memory_embedding': memory_embedding,
+            'metrics': metrics}
 
 
 def figures_from_cache(entry: dict) -> tuple:
@@ -100,10 +119,12 @@ def figures_from_cache(entry: dict) -> tuple:
     n_lm = int(entry['metrics']['n_landmarks'])
     n_pc = int(entry['metrics']['n_pcs'])
     image_paths = entry.get('umap_image_paths')
+    memory_embedding = entry.get('memory_embedding')
     return (
         _barcode_figure(dgms, n_lm, n_pc),
         _diagram_figure(dgms, n_lm, n_pc),
-        *_umap_figure(umap_embedding, n_lm, n_pc, int(entry['metrics'].get('n_umap_landmarks', n_lm)), image_paths=image_paths),
+        *_umap_figure(umap_embedding, n_lm, n_pc, int(entry['metrics'].get('n_umap_landmarks', n_lm)),
+                      image_paths=image_paths, memory_embedding=memory_embedding),
     )
 
 
@@ -199,7 +220,8 @@ def _diagram_figure(dgms, n_landmarks, n_pc) -> go.Figure:
     return fig
 
 
-def _umap_figure(umap_embedding, n_landmarks, n_pc, n_umap_landmarks=None, image_paths=None) -> tuple:
+def _umap_figure(umap_embedding, n_landmarks, n_pc, n_umap_landmarks=None, image_paths=None,
+                 memory_embedding=None) -> tuple:
     n_umap_landmarks = n_umap_landmarks or n_landmarks
 
     fig_3d = go.Figure(go.Scatter3d(
@@ -209,10 +231,21 @@ def _umap_figure(umap_embedding, n_landmarks, n_pc, n_umap_landmarks=None, image
         mode='markers',
         marker=dict(size=2, color='#1f77b4', opacity=0.6),
         customdata=image_paths,
+        name='slots',
     ))
+    if memory_embedding is not None:
+        fig_3d.add_trace(go.Scatter3d(
+            x=memory_embedding[:, 0],
+            y=memory_embedding[:, 1],
+            z=memory_embedding[:, 2],
+            mode='markers',
+            marker=dict(size=5, color='#d62728', symbol='diamond'),
+            name='memories',
+        ))
     fig_3d.update_layout(
         title=f'UMAP 3D — {n_pc} PCs, {n_umap_landmarks} points',
         scene=dict(xaxis_title='UMAP 1', yaxis_title='UMAP 2', zaxis_title='UMAP 3'),
+        showlegend=True,
     )
 
     fig_2d = go.Figure(go.Scatter(
@@ -221,11 +254,22 @@ def _umap_figure(umap_embedding, n_landmarks, n_pc, n_umap_landmarks=None, image
         mode='markers',
         marker=dict(size=3, color='#1f77b4', opacity=0.6),
         customdata=image_paths,
+        name='slots',
     ))
+    if memory_embedding is not None:
+        fig_2d.add_trace(go.Scatter(
+            x=memory_embedding[:, 0],
+            y=memory_embedding[:, 1],
+            mode='markers',
+            marker=dict(size=8, color='#d62728', symbol='diamond',
+                        line=dict(width=0.5, color='black')),
+            name='memories',
+        ))
     fig_2d.update_layout(
         title=f'UMAP 2D projection — {n_pc} PCs, {n_umap_landmarks} points',
         xaxis_title='UMAP 1', yaxis_title='UMAP 2',
         xaxis=dict(showgrid=False), yaxis=dict(showgrid=False),
+        showlegend=True,
     )
 
     return fig_2d, fig_3d
@@ -274,6 +318,7 @@ def save_pngs(entry: dict, base_path: str) -> None:
     """Save barcode, diagram, umap2d, umap3d as PNGs using matplotlib."""
     dgms = entry['dgms']
     emb = entry['umap_embedding']
+    mem_emb = entry.get('memory_embedding')
     n_lm = int(entry['metrics']['n_landmarks'])
     n_pc = int(entry['metrics']['n_pcs'])
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
@@ -324,6 +369,10 @@ def save_pngs(entry: dict, base_path: str) -> None:
     # umap 2d
     fig, ax = plt.subplots(figsize=(7, 7))
     ax.scatter(emb[:, 0], emb[:, 1], s=2, color='#1f77b4', alpha=0.5)
+    if mem_emb is not None:
+        ax.scatter(mem_emb[:, 0], mem_emb[:, 1], s=40, marker='D',
+                   color='#d62728', edgecolors='black', linewidths=0.5, label='memories')
+        ax.legend()
     ax.set_xlabel('UMAP 1')
     ax.set_ylabel('UMAP 2')
     n_umap = int(entry['metrics'].get('n_umap_landmarks', n_lm))
@@ -337,6 +386,10 @@ def save_pngs(entry: dict, base_path: str) -> None:
     fig = plt.figure(figsize=(8, 7))
     ax3d = fig.add_subplot(111, projection='3d')
     ax3d.scatter(emb[:, 0], emb[:, 1], emb[:, 2], s=1, color='#1f77b4', alpha=0.4)
+    if mem_emb is not None:
+        ax3d.scatter(mem_emb[:, 0], mem_emb[:, 1], mem_emb[:, 2], s=40, marker='D',
+                     color='#d62728', edgecolors='black', linewidths=0.5, label='memories')
+        ax3d.legend()
     ax3d.set_xlabel('UMAP 1')
     ax3d.set_ylabel('UMAP 2')
     ax3d.set_zlabel('UMAP 3')
