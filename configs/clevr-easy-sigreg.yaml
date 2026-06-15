@@ -36,5 +36,5 @@ train:
 
   use_dp: true
 
-  sigreg_weight: 1.0e-3
+  sigreg_weight: 10
   sigreg_num_slices: 512

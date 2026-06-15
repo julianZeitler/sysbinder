@@ -11,7 +11,7 @@ model:
   num_slots: 4
   num_blocks: 8
   cnn_hidden_size: 512
-  slot_size: 2048
+  slot_size: 256
   mlp_hidden_size: 192
   num_prototypes: 64
   num_retrieval_iters: 3
