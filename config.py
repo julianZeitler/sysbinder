@@ -36,6 +36,8 @@ class ModelConfig:
     slot_size: int = 2048
     mlp_hidden_size: int = 192
     num_prototypes: int = 64
+    num_retrieval_iters: int = 1  # Hopfield retrieval steps in BlockPrototypeMemory (1 == single attention read)
+    beta: float = 1.0  # MHN inverse temperature; >1 sharper retrieval, <1 more blending
 
     vocab_size: int = 4096
     num_decoder_layers: int = 8

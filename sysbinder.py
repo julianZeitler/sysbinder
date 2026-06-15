@@ -4,13 +4,15 @@ from dvae import dVAE
 
 
 class BlockPrototypeMemory(nn.Module):
-    def __init__(self, num_prototypes, num_blocks, d_model):
+    def __init__(self, num_prototypes, num_blocks, d_model,
+                 num_retrieval_iters=1, beta=1.0):
         super().__init__()
 
         self.num_prototypes = num_prototypes
         self.num_blocks = num_blocks
         self.d_model = d_model
         self.d_block = self.d_model // self.num_blocks
+        self.num_retrieval_iters = num_retrieval_iters  # 1 == single Hopfield step
 
         # block prototype memory
         self.mem_params = nn.Parameter(torch.zeros(1, num_prototypes, num_blocks, self.d_block), requires_grad=True)
@@ -30,7 +32,7 @@ class BlockPrototypeMemory(nn.Module):
         self.norm_query = BlockLayerNorm(d_model, num_blocks)
 
         # block attention
-        self.attn = BlockAttention(d_model, num_blocks)
+        self.attn = BlockAttention(d_model, num_blocks, beta=beta)
 
     def forward(self, queries):
         '''
@@ -42,28 +44,27 @@ class BlockPrototypeMemory(nn.Module):
 
         B, N, _ = queries.shape
 
-        # get memories
+        # get memories (fixed point set; computed once, outside the loop)
         mem = self.mem_proj(self.mem_params)  # 1, num_prototypes, num_blocks, d_block
         mem = mem.reshape(1, self.num_prototypes, -1)  # 1, num_prototypes, d_model
-
-        # norms
         mem = self.norm_mem(mem)  # 1, num_prototypes, d_model
-        queries = self.norm_query(queries)  # B, N, d_model
-
-        # broadcast
         mem = mem.expand(B, -1, -1)  # B, num_prototypes, d_model
 
-        # read
-        return self.attn(queries, mem, mem)  # B, N, d_model
+        # iterate the Hopfield retrieval: output state becomes the next query
+        state = queries
+        for _ in range(self.num_retrieval_iters):
+            q = self.norm_query(state)  # re-norm each step
+            state = self.attn(q, mem, mem)  # B, N, d_model
+        return state
 
 
 class SysBinder(nn.Module):
     
     def __init__(self, num_iterations, num_slots,
                  input_size, slot_size, mlp_hidden_size, num_prototypes, num_blocks,
-                 epsilon=1e-8):
+                 num_retrieval_iters=1, beta=1.0, epsilon=1e-8):
         super().__init__()
-        
+
         self.num_iterations = num_iterations
         self.num_slots = num_slots
         self.input_size = input_size
@@ -94,7 +95,9 @@ class SysBinder(nn.Module):
             BlockLinear(slot_size, mlp_hidden_size, num_blocks),
             nn.ReLU(),
             BlockLinear(mlp_hidden_size, slot_size, num_blocks))
-        self.prototype_memory = BlockPrototypeMemory(num_prototypes, num_blocks, slot_size)
+        self.prototype_memory = BlockPrototypeMemory(
+            num_prototypes, num_blocks, slot_size,
+            num_retrieval_iters=num_retrieval_iters, beta=beta)
 
     def forward(self, inputs, return_intermediates=False):
         """
@@ -172,7 +175,8 @@ class ImageEncoder(nn.Module):
 
         self.sysbinder = SysBinder(
             args.num_iterations, args.num_slots,
-            args.d_model, args.slot_size, args.mlp_hidden_size, args.num_prototypes, args.num_blocks)
+            args.d_model, args.slot_size, args.mlp_hidden_size, args.num_prototypes, args.num_blocks,
+            num_retrieval_iters=args.num_retrieval_iters, beta=args.beta)
 
 
 class ImageDecoder(nn.Module):

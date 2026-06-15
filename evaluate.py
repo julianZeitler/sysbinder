@@ -41,6 +41,7 @@ parser.add_argument('--pca-variance', type=float, default=0.95, help='Variance r
 parser.add_argument('--n-landmarks', type=int, default=500, help='Maxmin landmarks subsampled before PCA/ripser')
 parser.add_argument('--umap-n-landmarks', type=int, default=2000, help='Maxmin landmarks subsampled for UMAP embedding')
 parser.add_argument('--umap-image-hover', action='store_true', help='Save slot attention images and embed paths in UMAP HTML for hover preview')
+parser.add_argument('--memories', action='store_true', help='Embed the block prototype memories (from the checkpoint) into the UMAP map')
 
 args = parser.parse_args()
 
@@ -77,6 +78,7 @@ if args.wandb_run_id is not None:
 # ── activations ──────────────────────────────────────────────────────────────
 
 slot_img_dir = None
+model = None  # built lazily; reused for memory extraction if --memories
 
 if args.load_topology_cache:
     per_iteration = []  # not needed, topology cache has everything
@@ -90,7 +92,12 @@ elif args.load_activations is not None:
     model_cfg.num_blocks = saved_cfg.get('num_blocks', model_cfg.num_blocks)
     print(f'  per_iteration: {len(per_iteration)} x {per_iteration[0].shape}')
     slot_img_dir = saved.get('slot_img_dir')
-    if args.umap_image_hover and slot_img_dir is None:
+    # the stored path may be stale (e.g. activations produced on a cluster); prefer the
+    # local slot-image dir sitting next to the activations file if it exists
+    local_slot_dir = args.load_activations.replace('.pt', '_slot_images')
+    if (slot_img_dir is None or not os.path.isdir(slot_img_dir)) and os.path.isdir(local_slot_dir):
+        slot_img_dir = os.path.abspath(local_slot_dir)
+    if args.umap_image_hover and (slot_img_dir is None or not os.path.isdir(slot_img_dir)):
         print('Warning: activations.pt has no slot images. Re-run without --load_activations to generate them.')
 else:
     model = SysBinderImageAutoEncoder(model_cfg)
@@ -187,6 +194,28 @@ if args.load_topology_cache:
     with open(cache_path, 'rb') as f:
         topology_cache = pickle.load(f)
 else:
+    # ── block prototype memories (optional) ───────────────────────────────────
+    # mem lives in the same per-block space as the slots: slots are block-attention
+    # readouts whose values are exactly these projected+normed memories.
+    memory_blocks = None  # (num_blocks, num_prototypes, d_block)
+    if args.memories:
+        if model is None:
+            model = SysBinderImageAutoEncoder(model_cfg)
+            if not os.path.isfile(args.checkpoint_path):
+                raise FileNotFoundError(f'Checkpoint not found: {args.checkpoint_path}')
+            checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
+            model.load_state_dict(checkpoint['model'])
+            model.eval()
+        pm = model.image_encoder.sysbinder.prototype_memory
+        P = pm.num_prototypes
+        with torch.no_grad():
+            mem = pm.mem_proj(pm.mem_params)                    # 1, P, num_blocks, d_block
+            mem = mem.reshape(1, P, -1)                         # 1, P, slot_size
+            mem = pm.norm_mem(mem)[0]                           # P, slot_size
+        d_block = mem.shape[1] // model_cfg.num_blocks
+        memory_blocks = mem.reshape(P, model_cfg.num_blocks, d_block).permute(1, 0, 2).cpu().numpy()
+        print(f'Embedding {P} memories per block ({d_block}-d).')
+
     topology_cache = {}
     for i in iters:
         print(f'Topology: iteration {i+1}/{len(per_iteration)}...')
@@ -205,7 +234,9 @@ else:
                 ]
             else:
                 img_paths = None
-            entry = compute_topology(pcs, umap_n_landmarks=args.umap_n_landmarks, raw_data=data, image_paths=img_paths)
+            mem_block = memory_blocks[j] if memory_blocks is not None else None
+            entry = compute_topology(pcs, umap_n_landmarks=args.umap_n_landmarks, raw_data=data,
+                                     image_paths=img_paths, memory_data=mem_block)
             topology_cache[f'iter{i}/block{j}'] = entry
 
     with open(cache_path, 'wb') as f:

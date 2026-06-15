@@ -210,12 +210,18 @@ class BlockLayerNorm(nn.Module):
 
 class BlockAttention(nn.Module):
 
-    def __init__(self, d_model, num_blocks):
+    def __init__(self, d_model, num_blocks, beta=1.0):
         super().__init__()
 
         assert d_model % num_blocks == 0, "d_model must be divisible by num_blocks"
         self.d_model = d_model
         self.num_blocks = num_blocks
+        self.beta = beta  # MHN inverse temperature; scales the logits
+
+        # opt-in capture of the attention distribution (for inspection); off during training
+        self.store_attn = False
+        self.last_attn = None
+        self.attn_history = []  # every stored call, in order (e.g. across retrieval iters)
 
     def forward(self, q, k, v):
         """
@@ -233,9 +239,13 @@ class BlockAttention(nn.Module):
         k = k.view(B, S, self.num_blocks, -1).transpose(1, 2)
         v = v.view(B, S, self.num_blocks, -1).transpose(1, 2)
 
-        q = q * (q.shape[-1] ** (-0.5))
+        q = q * (self.beta * q.shape[-1] ** (-0.5))
         attn = torch.matmul(q, k.transpose(-1, -2))
         attn = F.softmax(attn, dim=-1)
+
+        if self.store_attn:
+            self.last_attn = attn.detach()  # B, num_blocks, T, S
+            self.attn_history.append(self.last_attn)
 
         output = torch.matmul(attn, v).transpose(1, 2).reshape(B, T, -1)
 
@@ -280,7 +290,7 @@ class CartesianPositionalEmbedding(nn.Module):
 
 
 def sigreg(x, global_step, num_slices=256):
-    """Sliced Independence Gaussian Regularizer (SIG-Reg).
+    """Sketched Isotropic Gaussian Regularizer (SIG-Reg).
 
     x: (N, D) — flattened latent vectors (e.g. B*num_slots, slot_size)
     Encourages each 1-D projection to be standard Gaussian via the Epps-Pulley statistic.
