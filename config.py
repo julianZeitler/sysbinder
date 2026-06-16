@@ -38,6 +38,7 @@ class ModelConfig:
     num_prototypes: int = 64
     num_retrieval_iters: int = 1  # Hopfield retrieval steps in BlockPrototypeMemory (1 == single attention read)
     beta: float = 1.0  # MHN inverse temperature; >1 sharper retrieval, <1 more blending
+    block_norm: str = 'layer'  # 'layer' = BlockLayerNorm, 'sphere' = per-block L2 norm
 
     vocab_size: int = 4096
     num_decoder_layers: int = 8
