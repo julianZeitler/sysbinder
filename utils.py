@@ -208,6 +208,20 @@ class BlockLayerNorm(nn.Module):
         return x
 
 
+class BlockSphereNorm(nn.Module):
+    def __init__(self, size, k):
+        super().__init__()
+        assert size % k == 0
+        self.k = k
+
+    def forward(self, x):
+        *OTHER, D = x.shape
+        x = x.reshape(np.prod(OTHER), self.k, -1)
+        x = F.normalize(x, dim=-1)
+        x = x.reshape(*OTHER, D)
+        return x
+
+
 class BlockAttention(nn.Module):
 
     def __init__(self, d_model, num_blocks, beta=1.0):

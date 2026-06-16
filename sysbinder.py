@@ -5,7 +5,7 @@ from dvae import dVAE
 
 class BlockPrototypeMemory(nn.Module):
     def __init__(self, num_prototypes, num_blocks, d_model,
-                 num_retrieval_iters=1, beta=1.0):
+                 num_retrieval_iters=1, beta=1.0, block_norm='layer'):
         super().__init__()
 
         self.num_prototypes = num_prototypes
@@ -28,8 +28,8 @@ class BlockPrototypeMemory(nn.Module):
         )
 
         # norms
-        self.norm_mem = BlockLayerNorm(d_model, num_blocks)
-        self.norm_query = BlockLayerNorm(d_model, num_blocks)
+        self.norm_mem = BlockSphereNorm(d_model, num_blocks) if block_norm == 'sphere' else BlockLayerNorm(d_model, num_blocks)
+        self.norm_query = BlockSphereNorm(d_model, num_blocks) if block_norm == 'sphere' else BlockLayerNorm(d_model, num_blocks)
 
         # block attention
         self.attn = BlockAttention(d_model, num_blocks, beta=beta)
@@ -62,7 +62,7 @@ class SysBinder(nn.Module):
     
     def __init__(self, num_iterations, num_slots,
                  input_size, slot_size, mlp_hidden_size, num_prototypes, num_blocks,
-                 num_retrieval_iters=1, beta=1.0, epsilon=1e-8):
+                 num_retrieval_iters=1, beta=1.0, epsilon=1e-8, block_norm='layer'):
         super().__init__()
 
         self.num_iterations = num_iterations
@@ -97,7 +97,7 @@ class SysBinder(nn.Module):
             BlockLinear(mlp_hidden_size, slot_size, num_blocks))
         self.prototype_memory = BlockPrototypeMemory(
             num_prototypes, num_blocks, slot_size,
-            num_retrieval_iters=num_retrieval_iters, beta=beta)
+            num_retrieval_iters=num_retrieval_iters, beta=beta, block_norm=block_norm)
 
     def forward(self, inputs, return_intermediates=False):
         """
@@ -176,7 +176,7 @@ class ImageEncoder(nn.Module):
         self.sysbinder = SysBinder(
             args.num_iterations, args.num_slots,
             args.d_model, args.slot_size, args.mlp_hidden_size, args.num_prototypes, args.num_blocks,
-            num_retrieval_iters=args.num_retrieval_iters, beta=args.beta)
+            num_retrieval_iters=args.num_retrieval_iters, beta=args.beta, block_norm=args.block_norm)
 
 
 class ImageDecoder(nn.Module):

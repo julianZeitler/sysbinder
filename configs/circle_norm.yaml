@@ -16,7 +16,7 @@ model:
   num_prototypes: 64
   num_retrieval_iters: 1
   beta: 1.0
-  block_norm: layer
+  block_norm: sphere
 
   vocab_size: 4096
   num_decoder_layers: 8
